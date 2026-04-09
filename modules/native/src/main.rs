@@ -1,6 +1,8 @@
 use std::{
     cmp::Ordering,
     fs::OpenOptions,
+    hint::black_box,
+    io::{BufWriter, Write},
     path::PathBuf,
     slice::Chunks,
     time::{Duration, Instant, SystemTime},
@@ -9,6 +11,8 @@ use std::{
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+mod unit;
 
 #[derive(Debug, Parser)]
 struct CliArgs {
@@ -59,7 +63,7 @@ enum HashArg {
     Blake3,
 }
 
-type NameCbTuple = (&'static str, &'static dyn Fn(Chunks<'_, u8>));
+type NameCbTuple = (&'static str, &'static dyn Fn(Chunks<'_, u8>) -> Vec<u8>);
 
 fn main() -> anyhow::Result<()> {
     let CliArgs {
@@ -89,7 +93,7 @@ fn main() -> anyhow::Result<()> {
     run_hash_test(name, &mut rng, testing, input, cb)
 }
 
-fn run_hash_test<F>(
+fn run_hash_test<F, T>(
     name: &str,
     rng: &mut StdRng,
     testing: TestingArgs,
@@ -97,7 +101,7 @@ fn run_hash_test<F>(
     cb: F,
 ) -> anyhow::Result<()>
 where
-    F: Fn(Chunks<'_, u8>),
+    F: Fn(Chunks<'_, u8>) -> T,
 {
     let mut results: Vec<f64> = Vec::with_capacity(testing.iterations);
 
@@ -107,37 +111,6 @@ where
     let status_duration = Duration::new(10, 0);
     let test_start = Instant::now();
     let mut last_status = Instant::now();
-
-    for it in 0..(testing.iterations + testing.warmup) {
-        let chunks = input_data.as_slice().chunks(testing.chunk_size);
-
-        let start = Instant::now();
-
-        cb(chunks);
-
-        let duration = start.elapsed();
-
-        if it >= testing.warmup {
-            results.push(duration.as_secs_f64());
-        }
-
-        if last_status.elapsed() > status_duration {
-            println!("{name} {it} {:#?}", test_start.elapsed());
-
-            last_status = Instant::now();
-        }
-    }
-
-    log_results(&results);
-
-    let result_struct = serde_json::json!({
-        "env": "native",
-        "hash": name,
-        "chunk_size": testing.chunk_size,
-        "iterations": testing.iterations,
-        "warmup": testing.warmup,
-        "results": results,
-    });
 
     let output_file = OpenOptions::new()
         .create(true)
@@ -150,103 +123,142 @@ where
                 output_path.display()
             )
         })?;
+    let mut output = BufWriter::new(output_file);
 
-    serde_json::to_writer(output_file, &result_struct)
-        .context("failed to write results to output file")?;
+    writeln!(&mut output, "env,hash,chunk_size,iterations,warmup")
+        .context("failed to write csv header")?;
+    writeln!(
+        &mut output,
+        "native,{name},{},{},{}",
+        testing.chunk_size, testing.iterations, testing.warmup
+    )
+    .context("failed to write test info to csv")?;
+    writeln!(&mut output, "times").context("failed to write results header to csv")?;
+
+    let total = testing.iterations + testing.warmup;
+
+    for it in 0..total {
+        let chunks = input_data.as_slice().chunks(testing.chunk_size);
+
+        let start = Instant::now();
+
+        black_box(cb(chunks));
+
+        let duration = start.elapsed();
+
+        if it >= testing.warmup {
+            results.push(duration.as_secs_f64());
+
+            writeln!(&mut output, "{}", duration.as_secs_f64())
+                .context("failed to write result to csv")?;
+        }
+
+        if last_status.elapsed() > status_duration {
+            println!(
+                "{name} {it} / {total} {:.01}% {:#?}",
+                (it as f64 / total as f64) * 100.0,
+                test_start.elapsed()
+            );
+
+            last_status = Instant::now();
+        }
+    }
+
+    log_results(&results);
 
     Ok(())
 }
 
 use md5::{Digest, Md5};
 
-fn run_md5<'a>(chunks: Chunks<'a, u8>) {
+fn run_md5<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = Md5::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha1<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha1<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha1::Sha1::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha2_256<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha2_256<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha2::Sha256::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha2_384<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha2_384<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha2::Sha384::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha2_512<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha2_512<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha2::Sha512::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha3_256<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha3_256<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha3::Sha3_256::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha3_384<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha3_384<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha3::Sha3_384::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_sha3_512<'a>(chunks: Chunks<'a, u8>) {
+fn run_sha3_512<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = sha3::Sha3_512::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().to_vec()
 }
 
-fn run_blake3<'a>(chunks: Chunks<'a, u8>) {
+fn run_blake3<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     let mut hasher = blake3::Hasher::new();
 
     for chunk in chunks {
         hasher.update(chunk);
     }
 
-    let _ = hasher.finalize();
+    hasher.finalize().as_bytes().to_vec()
 }
 
 fn get_time() -> u64 {
@@ -259,7 +271,7 @@ fn get_time() -> u64 {
 fn get_input(rng: &mut StdRng, testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
     println!(
         "generating {} bytes",
-        input.total_chunks * testing.chunk_size
+        unit::FmtUnit::new((input.total_chunks * testing.chunk_size) as u64, "B")
     );
 
     let mut tmp = Vec::with_capacity(input.total_chunks * testing.chunk_size);
@@ -273,7 +285,7 @@ fn get_output_path(name: &str, testing: &TestingArgs) -> PathBuf {
     if testing.output.is_dir() {
         testing
             .output
-            .join(format!("native_{name}_{}.json", get_time()))
+            .join(format!("native_{name}_{}.csv", get_time()))
     } else {
         testing.output.clone()
     }
@@ -321,7 +333,7 @@ fn log_results(results: &[f64]) {
         (sd, sd / results.len() as f64)
     };
 
-    let mut outliers = 0;
+    let mut outliers: usize = 0;
 
     for value in results {
         let score = ((*value - average) / std_dev).abs();
@@ -336,5 +348,9 @@ fn log_results(results: &[f64]) {
 
     println!("results: ~{average:.09}+-{std_dev:0.9}");
     println!("    sem: {sem:0.12} min: {min:.09} max: {max:.09}");
-    println!("    outliers: {outliers}");
+    println!(
+        "    outliers: {outliers} / {} {:.01}%",
+        results.len(),
+        (outliers as f64 / results.len() as f64) * 100.0
+    );
 }
