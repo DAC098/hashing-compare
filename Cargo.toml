@@ -1,5 +1,5 @@
 [workspace]
-members = ["modules/native"]
+members = ["modules/data","modules/native", "modules/wasm"]
 resolver = "3"
 
 [workspace.dependencies]

@@ -19,83 +19,105 @@ struct CliArgs {
     #[command(flatten)]
     testing: TestingArgs,
 
-    #[command(flatten)]
-    input: InputArg,
-
     #[command(subcommand)]
     cmd: HashArg,
 }
 
 #[derive(Debug, Args)]
 struct TestingArgs {
-    #[arg(short, long, default_value = "100")]
+    #[arg(short, long, default_value = "50")]
     warmup: usize,
 
-    #[arg(short, long, default_value = "500")]
+    #[arg(short, long, default_value = "100")]
     iterations: usize,
 
     #[arg(long)]
     output: PathBuf,
 
-    #[arg(long)]
+    #[arg(long, default_value = "512")]
     chunk_size: usize,
 }
 
-#[derive(Debug, Args)]
-struct InputArg {
-    #[arg(short, long)]
-    seed: Option<u64>,
+#[derive(Debug, Subcommand)]
+enum InputArg {
+    Rand {
+        #[arg(short, long)]
+        seed: Option<u64>,
 
-    #[arg(long)]
-    total_chunks: usize,
+        #[arg(long)]
+        total_chunks: usize,
+    },
+    File {
+        #[arg(long)]
+        path: PathBuf,
+    }
 }
 
 #[derive(Debug, Subcommand)]
 enum HashArg {
-    Md5,
-    Sha1,
-    Sha2_256,
-    Sha2_384,
-    Sha2_512,
-    Sha3_256,
-    Sha3_384,
-    Sha3_512,
-    Blake3,
+    Md5 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha1 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha2_256 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha2_384 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha2_512 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha3_256 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha3_384 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Sha3_512 {
+        #[command(subcommand)]
+        input: InputArg
+    },
+    Blake3 {
+        #[command(subcommand)]
+        input: InputArg
+    },
 }
 
-type NameCbTuple = (&'static str, &'static dyn Fn(Chunks<'_, u8>) -> Vec<u8>);
+type ArgsTuple = (&'static str, InputArg, &'static dyn Fn(Chunks<'_, u8>) -> Vec<u8>);
 
 fn main() -> anyhow::Result<()> {
     let CliArgs {
         cmd,
         testing,
-        input,
     } = CliArgs::parse();
 
-    let seed = input.seed.unwrap_or(rand::random());
-
-    println!("seed: {seed}");
-
-    let mut rng = StdRng::seed_from_u64(seed);
-
-    let (name, cb): NameCbTuple = match cmd {
-        HashArg::Md5 => ("md5", &run_md5),
-        HashArg::Sha1 => ("sha1", &run_sha1),
-        HashArg::Sha2_256 => ("sha2_256", &run_sha2_256),
-        HashArg::Sha2_384 => ("sha2_384", &run_sha2_384),
-        HashArg::Sha2_512 => ("sha2_512", &run_sha2_512),
-        HashArg::Sha3_256 => ("sha3_256", &run_sha3_256),
-        HashArg::Sha3_384 => ("sha3_384", &run_sha3_384),
-        HashArg::Sha3_512 => ("sha3_512", &run_sha3_512),
-        HashArg::Blake3 => ("blake3", &run_blake3),
+    let (name, input, cb): ArgsTuple = match cmd {
+        HashArg::Md5 { input } => ("md5", input, &run_md5),
+        HashArg::Sha1 { input } => ("sha1", input, &run_sha1),
+        HashArg::Sha2_256 { input } => ("sha2_256", input, &run_sha2_256),
+        HashArg::Sha2_384 { input } => ("sha2_384", input, &run_sha2_384),
+        HashArg::Sha2_512 { input } => ("sha2_512", input, &run_sha2_512),
+        HashArg::Sha3_256 { input } => ("sha3_256", input, &run_sha3_256),
+        HashArg::Sha3_384 { input } => ("sha3_384", input, &run_sha3_384),
+        HashArg::Sha3_512 { input } => ("sha3_512", input, &run_sha3_512),
+        HashArg::Blake3 { input } => ("blake3", input, &run_blake3),
     };
 
-    run_hash_test(name, &mut rng, testing, input, cb)
+    run_hash_test(name, testing, input, cb)
 }
 
 fn run_hash_test<F, T>(
     name: &str,
-    rng: &mut StdRng,
     testing: TestingArgs,
     input: InputArg,
     cb: F,
@@ -106,7 +128,7 @@ where
     let mut results: Vec<f64> = Vec::with_capacity(testing.iterations);
 
     let output_path = get_output_path(name, &testing);
-    let input_data = get_input(rng, &testing, &input);
+    let input_data = get_input(&testing, &input);
 
     let status_duration = Duration::new(10, 0);
     let test_start = Instant::now();
@@ -125,12 +147,12 @@ where
         })?;
     let mut output = BufWriter::new(output_file);
 
-    writeln!(&mut output, "env,hash,chunk_size,iterations,warmup")
+    writeln!(&mut output, "env,hash,bytes,chunk_size,iterations,warmup")
         .context("failed to write csv header")?;
     writeln!(
         &mut output,
-        "native,{name},{},{},{}",
-        testing.chunk_size, testing.iterations, testing.warmup
+        "native,{name},{},{},{},{}",
+        input_data.len(), testing.chunk_size, testing.iterations, testing.warmup
     )
     .context("failed to write test info to csv")?;
     writeln!(&mut output, "times").context("failed to write results header to csv")?;
@@ -164,7 +186,7 @@ where
         }
     }
 
-    log_results(&results);
+    log_results(&results, input_data.len());
 
     Ok(())
 }
@@ -268,17 +290,30 @@ fn get_time() -> u64 {
         .expect("check clock settings as system time is before UNIX_EPOCH")
 }
 
-fn get_input(rng: &mut StdRng, testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
-    println!(
-        "generating {} bytes",
-        unit::FmtUnit::new((input.total_chunks * testing.chunk_size) as u64, "B")
-    );
+fn get_input(testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
+    match input {
+        InputArg::Rand { seed, total_chunks } => {
+            let seed = seed.unwrap_or(rand::random());
 
-    let mut tmp = Vec::with_capacity(input.total_chunks * testing.chunk_size);
+            println!("seed: {seed}");
 
-    rng.fill(tmp.as_mut_slice());
+            let mut rng = StdRng::seed_from_u64(seed);
 
-    tmp
+            println!(
+                "generating {} bytes",
+                unit::FmtUnit::new((total_chunks * testing.chunk_size) as u64, "B")
+            );
+
+            let mut tmp = vec![0; total_chunks * testing.chunk_size];
+
+            rng.fill(tmp.as_mut_slice());
+
+            tmp
+        }
+        InputArg::File { path } => {
+            std::fs::read(&path).expect("failed to read contents of input file")
+        }
+    }
 }
 
 fn get_output_path(name: &str, testing: &TestingArgs) -> PathBuf {
@@ -291,7 +326,7 @@ fn get_output_path(name: &str, testing: &TestingArgs) -> PathBuf {
     }
 }
 
-fn log_results(results: &[f64]) {
+fn log_results(results: &[f64], bytes: usize) {
     let mut total_time = 0.0f64;
     let mut min = None::<f64>;
     let mut max = None::<f64>;
@@ -345,6 +380,7 @@ fn log_results(results: &[f64]) {
 
     let min = min.unwrap_or(0.0);
     let max = max.unwrap_or(0.0);
+    let hashing_speed = bytes as f64 / average;
 
     println!("results: ~{average:.09}+-{std_dev:0.9}");
     println!("    sem: {sem:0.12} min: {min:.09} max: {max:.09}");
@@ -353,4 +389,5 @@ fn log_results(results: &[f64]) {
         results.len(),
         (outliers as f64 / results.len() as f64) * 100.0
     );
+    println!("    speed: {}/s", unit::FmtUnitF64::new(hashing_speed, "B"));
 }
