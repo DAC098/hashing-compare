@@ -1,0 +1,1 @@
+wasm-pack build --target nodejs -d dist/wasm-nodejs --release modules/wasm/
