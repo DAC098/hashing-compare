@@ -22,8 +22,6 @@ function main() {
 
     let opts = program.opts();
 
-    console.log(opts);
-
     let chunk_size = opts.chunkSize;
     let iterations = opts.iterations;
     let warmup = opts.warmup;
@@ -97,8 +95,6 @@ function run_test({name, chunk_size, iterations, warmup, input, output}, cb) {
     let total = iterations + warmup;
 
     let csv_output = `env,hash,bytes,chunk_size,iterations,warmup\nwasm,${name},${bytes},${chunk_size},${iterations},${warmup}\ntimes\n`;
-    console.log(`starting test: ${name} ${chunk_size} ${iterations} ${warmup}`);
-
     let last_notify = process.hrtime.bigint();
     let notify_dur = NANO_BIG * 10n;
 
@@ -230,8 +226,6 @@ function get_input(input, chunk_size) {
         rtn.push(buffer.subarray(index, index + chunk_size));
     }
 
-    console.log("loaded input:", buffer.length);
-
     return [rtn, buffer.length];
 }
 
@@ -252,7 +246,19 @@ function get_output(name, output) {
 
     if (stats != null) {
         if (stats.isDirectory()) {
-            return path.join(output_path, `wasm_${name}_${get_time()}.csv`);
+            let time = get_time();
+            let count = 1;
+
+            while (true) {
+                let check_path = path.join(output_path, `wasm_${name}_${time}_${count}.csv`);
+                let check_stat = fs.statSync(check_path, {throwIfNoEntry: false});
+
+                if (check_stat == null) {
+                    return check_path;
+                }
+
+                count += 1;
+            }
         }
     }
 

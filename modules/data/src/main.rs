@@ -3,26 +3,18 @@ use std::fmt::Write;
 use md5::Digest;
 use rand::RngExt;
 
-const KIB: usize = 1024;
+const CHUNK_SIZE: usize = 64;
+const _KIB: usize = 1024;
 
 fn main() {
-    hash_data("test_01", "i am test data");
-    hash_data("test_02", "i ma a different set of information");
-
     let mut rng = rand::rng();
 
-    let total_chunks = [
-        KIB,
-        KIB * 2,
-        KIB * 4,
-        KIB * 8,
-        KIB * 16
-    ];
+    let total_chunks = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
 
     for (index, amount) in total_chunks.iter().enumerate() {
-        let name = format!("test_{:02}", index + 3);
+        let name = format!("test_{:02}", index + 1);
 
-        let mut data = vec![0; KIB * (*amount)];
+        let mut data = vec![0; CHUNK_SIZE * (*amount)];
 
         rng.fill(data.as_mut_slice());
 

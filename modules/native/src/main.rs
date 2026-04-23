@@ -318,9 +318,19 @@ fn get_input(testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
 
 fn get_output_path(name: &str, testing: &TestingArgs) -> PathBuf {
     if testing.output.is_dir() {
-        testing
-            .output
-            .join(format!("native_{name}_{}.csv", get_time()))
+        let time = get_time();
+        let mut count: usize = 1;
+
+        loop {
+            let name = format!("native_{name}_{time}_{count}.csv");
+            let check = testing.output.join(&name);
+
+            if !check.exists() {
+                return check;
+            }
+
+            count += 1;
+        }
     } else {
         testing.output.clone()
     }
