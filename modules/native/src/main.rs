@@ -1,105 +1,31 @@
 use std::{
     cmp::Ordering,
-    fs::OpenOptions,
     hint::black_box,
-    io::{BufWriter, Write},
-    path::PathBuf,
+    io::Write,
     slice::Chunks,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
+mod args;
+mod output;
+mod time;
 mod unit;
 
-#[derive(Debug, Parser)]
-struct CliArgs {
-    #[command(flatten)]
-    testing: TestingArgs,
+use args::{CliArgs, HashArg, InputArg, TestingArgs};
+use output::Output;
 
-    #[command(subcommand)]
-    cmd: HashArg,
-}
-
-#[derive(Debug, Args)]
-struct TestingArgs {
-    #[arg(short, long, default_value = "50")]
-    warmup: usize,
-
-    #[arg(short, long, default_value = "100")]
-    iterations: usize,
-
-    #[arg(long)]
-    output: PathBuf,
-
-    #[arg(long, default_value = "512")]
-    chunk_size: usize,
-}
-
-#[derive(Debug, Subcommand)]
-enum InputArg {
-    Rand {
-        #[arg(short, long)]
-        seed: Option<u64>,
-
-        #[arg(long)]
-        total_chunks: usize,
-    },
-    File {
-        #[arg(long)]
-        path: PathBuf,
-    }
-}
-
-#[derive(Debug, Subcommand)]
-enum HashArg {
-    Md5 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha1 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha2_256 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha2_384 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha2_512 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha3_256 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha3_384 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Sha3_512 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-    Blake3 {
-        #[command(subcommand)]
-        input: InputArg
-    },
-}
-
-type ArgsTuple = (&'static str, InputArg, &'static dyn Fn(Chunks<'_, u8>) -> Vec<u8>);
+type ArgsTuple = (
+    &'static str,
+    InputArg,
+    &'static dyn Fn(Chunks<'_, u8>) -> Vec<u8>,
+);
 
 fn main() -> anyhow::Result<()> {
-    let CliArgs {
-        cmd,
-        testing,
-    } = CliArgs::parse();
+    let CliArgs { cmd, testing } = CliArgs::parse();
 
     let (name, input, cb): ArgsTuple = match cmd {
         HashArg::Md5 { input } => ("md5", input, &run_md5),
@@ -127,66 +53,88 @@ where
 {
     let mut results: Vec<f64> = Vec::with_capacity(testing.iterations);
 
-    let output_path = get_output_path(name, &testing);
-    let input_data = get_input(&testing, &input);
+    let mut output = Output::new(name, &testing)?;
+    let input_data = get_input(&input, &testing);
 
     let status_duration = Duration::new(10, 0);
     let test_start = Instant::now();
     let mut last_status = Instant::now();
-
-    let output_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&output_path)
-        .with_context(|| {
-            format!(
-                "failed to open output file for results: {}",
-                output_path.display()
-            )
-        })?;
-    let mut output = BufWriter::new(output_file);
 
     writeln!(&mut output, "env,hash,bytes,chunk_size,iterations,warmup")
         .context("failed to write csv header")?;
     writeln!(
         &mut output,
         "native,{name},{},{},{},{}",
-        input_data.len(), testing.chunk_size, testing.iterations, testing.warmup
+        input_data.len(),
+        testing.chunk_size,
+        testing.iterations,
+        testing.warmup
     )
     .context("failed to write test info to csv")?;
     writeln!(&mut output, "times").context("failed to write results header to csv")?;
 
-    let total = testing.iterations + testing.warmup;
+    if let Some(busy) = testing.busy {
+        let run_for = Duration::new(busy, 0);
+        let mut it = 0;
 
-    for it in 0..total {
-        let chunks = input_data.as_slice().chunks(testing.chunk_size);
+        while test_start.elapsed() < run_for {
+            let chunks = input_data.as_slice().chunks(testing.chunk_size);
 
-        let start = Instant::now();
+            let start = Instant::now();
 
-        black_box(cb(chunks));
+            black_box(cb(chunks));
 
-        let duration = start.elapsed();
+            let duration = start.elapsed();
 
-        if it >= testing.warmup {
-            results.push(duration.as_secs_f64());
+            if output.enabled() || !testing.quiet {
+                results.push(duration.as_secs_f64());
 
-            writeln!(&mut output, "{}", duration.as_secs_f64())
-                .context("failed to write result to csv")?;
+                writeln!(&mut output, "{}", duration.as_secs_f64())
+                    .context("failed to write result to csv")?;
+            }
+
+            if !testing.quiet && last_status.elapsed() > status_duration {
+                println!("{name} {it} {:#?}", test_start.elapsed());
+
+                last_status = Instant::now();
+            }
+
+            it += 1;
         }
+    } else {
+        let total = testing.iterations + testing.warmup;
 
-        if last_status.elapsed() > status_duration {
-            println!(
-                "{name} {it} / {total} {:.01}% {:#?}",
-                (it as f64 / total as f64) * 100.0,
-                test_start.elapsed()
-            );
+        for it in 0..total {
+            let chunks = input_data.as_slice().chunks(testing.chunk_size);
 
-            last_status = Instant::now();
+            let start = Instant::now();
+
+            black_box(cb(chunks));
+
+            let duration = start.elapsed();
+
+            if (output.enabled() || !testing.quiet) && it >= testing.warmup {
+                results.push(duration.as_secs_f64());
+
+                writeln!(&mut output, "{}", duration.as_secs_f64())
+                    .context("failed to write result to csv")?;
+            }
+
+            if !testing.quiet && last_status.elapsed() > status_duration {
+                println!(
+                    "{name} {it} / {total} {:.01}% {:#?}",
+                    (it as f64 / total as f64) * 100.0,
+                    test_start.elapsed()
+                );
+
+                last_status = Instant::now();
+            }
         }
     }
 
-    log_results(&results, input_data.len());
+    if !testing.quiet {
+        log_results(&results, input_data.len());
+    }
 
     Ok(())
 }
@@ -283,14 +231,7 @@ fn run_blake3<'a>(chunks: Chunks<'a, u8>) -> Vec<u8> {
     hasher.finalize().as_bytes().to_vec()
 }
 
-fn get_time() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .expect("check clock settings as system time is before UNIX_EPOCH")
-}
-
-fn get_input(testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
+fn get_input(input: &InputArg, testing: &TestingArgs) -> Vec<u8> {
     match input {
         InputArg::Rand { seed, total_chunks } => {
             let seed = seed.unwrap_or(rand::random());
@@ -313,26 +254,6 @@ fn get_input(testing: &TestingArgs, input: &InputArg) -> Vec<u8> {
         InputArg::File { path } => {
             std::fs::read(&path).expect("failed to read contents of input file")
         }
-    }
-}
-
-fn get_output_path(name: &str, testing: &TestingArgs) -> PathBuf {
-    if testing.output.is_dir() {
-        let time = get_time();
-        let mut count: usize = 1;
-
-        loop {
-            let name = format!("native_{name}_{time}_{count}.csv");
-            let check = testing.output.join(&name);
-
-            if !check.exists() {
-                return check;
-            }
-
-            count += 1;
-        }
-    } else {
-        testing.output.clone()
     }
 }
 

@@ -36,9 +36,9 @@ def run_wasm(algo, size, input_path, iterations, warmup):
             "-w", str(warmup),
             "-i", str(iterations),
             "--chunk-size", str(size),
+            "--output", "./output/",
             algo,
             input_path,
-            "./output/",
         ]
     )
 

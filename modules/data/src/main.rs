@@ -9,7 +9,9 @@ const _KIB: usize = 1024;
 fn main() {
     let mut rng = rand::rng();
 
-    let total_chunks = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
+    let total_chunks = [
+        1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
+    ];
 
     for (index, amount) in total_chunks.iter().enumerate() {
         let name = format!("test_{:02}", index + 1);
@@ -24,7 +26,7 @@ fn main() {
 
 fn hash_data<T>(name: &str, data: T)
 where
-    T: AsRef<[u8]>
+    T: AsRef<[u8]>,
 {
     let data_ref = data.as_ref();
     let mut hashes = String::new();

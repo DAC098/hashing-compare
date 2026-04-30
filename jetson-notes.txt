@@ -1,0 +1,10 @@
+retrieve current system voltage (millivolts):
+cat /sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/in1_input
+
+retrieve current system current (milliamps):
+cat /sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/curr1_input
+
+calc watts:
+P = V x I
+V (volts)
+I (amps)

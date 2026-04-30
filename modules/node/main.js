@@ -14,9 +14,11 @@ function main() {
     program.option("-w, --warmup <number>", "number of warmup iterations to run", parseBase10, 50)
         .option("-i, --iterations <number>", "number of test iterations to run", parseBase10, 100)
         .option("--chunk-size <number>", "the chunk size to use when calculating a hash", parseBase10, 512)
+        .option("--busy <number>", "the total number of seconds to run hashing for", parseBase10)
+        .option("--output <path>", "directory or file to output test results to")
+        .option("--quiet", "will not log output to console")
         .argument("<algo>", "the hash algorithm to test")
         .argument("<input>", "the input file to use as data")
-        .argument("<output>", "directory or file to output test results to");
 
     program.parse();
 
@@ -25,8 +27,10 @@ function main() {
     let chunk_size = opts.chunkSize;
     let iterations = opts.iterations;
     let warmup = opts.warmup;
+    let output = opts.output;
+    let quiet = opts.quiet;
+    let busy = opts.busy;
     let input = program.args[1];
-    let output = program.args[2];
 
     let name;
     let cb;
@@ -78,6 +82,8 @@ function main() {
         chunk_size,
         iterations,
         warmup,
+        busy,
+        quiet,
         input,
         output,
     };
@@ -89,43 +95,85 @@ function parseBase10(v) {
     return parseInt(v, 10);
 }
 
-function run_test({name, chunk_size, iterations, warmup, input, output}, cb) {
+function run_test({name, chunk_size, iterations, warmup, input, output, busy, quiet}, cb) {
+    let output_enabled = typeof output === "string";
     let [data, bytes] = get_input(input, chunk_size);
     let results = [];
     let total = iterations + warmup;
 
     let csv_output = `env,hash,bytes,chunk_size,iterations,warmup\nwasm,${name},${bytes},${chunk_size},${iterations},${warmup}\ntimes\n`;
+    let test_start = process.hrtime.bigint();
     let last_notify = process.hrtime.bigint();
     let notify_dur = NANO_BIG * 10n;
 
-    for (let index = 0; index < total; index += 1) {
-        let start = process.hrtime.bigint();
+    if (busy != null) {
+        let run_for = BigInt(busy) * NANO_BIG;
+        let it = 0;
 
-        cb(data);
+        while (true) {
+            let now = process.hrtime.bigint();
 
-        let end = process.hrtime.bigint();
-        let duration = end - start;
+            if (now - test_start >= run_for) {
+                break;
+            }
 
-        if (index >= warmup) {
-            let value = parseFloat(duration.toString()) / NANO;
+            let start = process.hrtime.bigint();
 
-            csv_output += value + "\n";
+            cb(data);
 
-            results.push(value);
+            let end = process.hrtime.bigint();
+            let duration = end - start;
+
+            if (output_enabled || !quiet) {
+                let value = parseFloat(duration.toString()) / NANO;
+
+                csv_output += value + "\n";
+
+                results.push(value);
+            }
+
+            if (!quiet && end - last_notify > notify_dur) {
+                console.log(`${name} ${it}`);
+
+                last_notify = end;
+            }
+
+            it += 1;
         }
+    } else {
+        for (let index = 0; index < total; index += 1) {
+            let start = process.hrtime.bigint();
 
-        if (end - last_notify > notify_dur) {
-            let percent_complete = (index / total) * 100;
+            cb(data);
 
-            console.log(`${name} ${index} / ${total} ${percent_complete.toFixed(1)}`);
+            let end = process.hrtime.bigint();
+            let duration = end - start;
 
-            last_notify = end;
+            if ((output_enabled || !quiet) && index >= warmup) {
+                let value = parseFloat(duration.toString()) / NANO;
+
+                csv_output += value + "\n";
+
+                results.push(value);
+            }
+
+            if (!quiet && end - last_notify > notify_dur) {
+                let percent_complete = (index / total) * 100;
+
+                console.log(`${name} ${index} / ${total} ${percent_complete.toFixed(1)}`);
+
+                last_notify = end;
+            }
         }
     }
 
-    log_results(results, bytes);
+    if (!quiet) {
+        log_results(results, bytes);
+    }
 
-    fs.writeFileSync(get_output(name, output), csv_output);
+    if (typeof output === "string") {
+        fs.writeFileSync(get_output(name, output), csv_output);
+    }
 }
 
 function run_md5(chunks) {

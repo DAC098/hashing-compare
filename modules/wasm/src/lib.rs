@@ -1,5 +1,5 @@
-use wasm_bindgen::prelude::*;
 use md5::Digest;
+use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub struct Md5(md5::Md5);

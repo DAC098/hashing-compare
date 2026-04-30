@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 blake3.workspace = true
-clap = { version = "4.6.0", features = ["derive"] }
+clap.workspace = true
 md-5.workspace = true
 rand = "0.10.0"
 sha1.workspace = true
