@@ -30,29 +30,42 @@ Mebi = Kibi * 1024
 Gibi = Mebi * 1024
 Tebi = Gibi * 1024
 
-UNITS = ["Ki", "Mi", "Gi", "Ti"]
+UNIT_SUFFIX = ["", "Ki", "Mi", "Gi", "Ti"]
+UNIT_VALUES = [1, Kibi, Mebi, Gibi, Tebi]
 
-def calc_base_2(value):
-    if value < Kibi:
-        return value, ""
+def calc_base_2(given):
+    length = len(UNIT_SUFFIX)
 
-    length = len(UNITS)
-    rolling = value
+    for value in range(0, length):
+        to_shift = 10 * value
+        calc = given >> to_shift
 
-    for name in UNITS:
-        rolling = rolling >> 10
+        if calc < Kibi:
+            return calc, UNIT_SUFFIX[value], to_shift
 
-        if rolling < Kibi:
-            return rolling, name
+    to_shift = 10 * (length - 1)
 
-    return rolling, UNITS[length - 1]
+    return given >> to_shift, UNIT_SUFFIX[length - 1], to_shift
 
 def fmt_base_2(value, prefix):
-    (reduced, unit) = calc_base_2(value)
+    (reduced, unit, to_shift) = calc_base_2(value)
 
     return f"{reduced}{unit}{prefix}"
 
-def calc_stats(root_dir, name, values, create_graphs = True):
+def calc_base_2_div(given):
+    length = len(UNIT_VALUES)
+
+    for value in range(0, length):
+        calc = given / UNIT_VALUES[value]
+
+        if calc < Kibi:
+            return calc, UNIT_SUFFIX[value], UNIT_VALUES[value]
+
+    last = legnth - 1
+
+    return given / UNIT_VALUES[last], UNIT_SUFFIX[last], UNIT_VALUES[value]
+
+def calc_stats(root_dir, name, values, label, create_graphs = True):
     n = len(values)
 
     np_mean = np.mean(values)
@@ -100,14 +113,14 @@ def calc_stats(root_dir, name, values, create_graphs = True):
 
     plt.title(name)
     plt.xlabel("Runs")
-    plt.ylabel("Time (Seconds)")
+    plt.ylabel(label)
     plt.savefig(os.path.join(root_dir, "jitter.png"))
     plt.clf()
 
     hist_counts, hist_bins = np.histogram(values, bins=(len(values) // 10))
     plt.stairs(hist_counts, hist_bins)
     plt.title(name)
-    plt.xlabel("Time (Seconds)")
+    plt.xlabel(label)
     plt.ylabel("Amount")
     plt.savefig(os.path.join(root_dir, "hist.png"))
     plt.clf()
@@ -153,19 +166,43 @@ def load_perf_file(data_file):
 
     (env, algo, total_bytes, chunk_size) = parse_test(lines[1])
 
+    minimum = None
+    maximum = None
+
     for line in lines[3:]:
         split = line.split(",")
 
         time = float(split[0])
 
-        results.append(time)
+        speed = total_bytes / time
+
+        if minimum is None or minimum > speed:
+            minimum = speed
+
+        if maximum is None or maximum < speed:
+            maximum = speed
+
+        results.append(speed)
+
+    (_, unit, to_div) = calc_base_2_div(minimum)
+    adjusted = []
+
+    for value in results:
+        adjusted.append(value / to_div)
 
     return {
         "env": env,
         "algo": algo,
         "total_bytes": total_bytes,
         "chunk_size": chunk_size,
-        "results": results
+        "minimum": minimum,
+        "maximum": maximum,
+        "results": results,
+        "adjusted": {
+            "units": unit,
+            "to_div": to_div,
+            "results": adjusted,
+        },
     }
 
 def calc_perf_file(data_file, output_dir, create_graphs = True):
@@ -180,6 +217,7 @@ def calc_perf_file(data_file, output_dir, create_graphs = True):
         data_dir,
         f"{data["env"]} {data["algo"]} {fmt_base_2(data["total_bytes"], "B")} {fmt_base_2(data["chunk_size"], "B")}",
         data["results"],
+        f"Speed ({data["adjusted"]["units"]}B/Sec)",
         create_graphs
     )
 
@@ -193,10 +231,27 @@ def calc_perf_outliers(data, output_dir, create_graphs = True):
 
     outliers = remove_outliers(data["results"])
 
+    minimum = None
+    maximum = None
+
+    for value in outliers:
+        if minimum is None or minimum > value:
+            minimum = value
+
+        if maximum is None or maximum < value:
+            maximum = value
+
+    (_, unit, to_div) = calc_base_2_div(minimum)
+    adjusted = []
+
+    for value in outliers:
+        adjusted.append(value / to_div)
+
     calc_stats(
         data_dir,
         f"{data["env"]} {data["algo"]} {fmt_base_2(data["total_bytes"], "B")} {fmt_base_2(data["chunk_size"], "B")} WO",
-        outliers,
+        adjusted,
+        f"Speed ({unit}B/Sec)",
         create_graphs
     )
 
@@ -205,7 +260,9 @@ def calc_perf_outliers(data, output_dir, create_graphs = True):
         "algo": data["algo"],
         "total_bytes": data["total_bytes"],
         "chunk_size": data["chunk_size"],
-        "results": outliers
+        "minimum": minimum,
+        "maximum": maximum,
+        "results": outliers,
     }
 
 def calc_perf_dir(input_dir, output_dir, create_graphs = True):
