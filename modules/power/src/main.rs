@@ -16,11 +16,13 @@ use clap::Parser;
 mod args;
 mod output;
 
-use args::{AlgoOpt, ChunkSize, CliArgs, ExeOpt};
+use args::{AlgoOpt, ChunkSize, CliArgs, ExeOpt, RunArg, TestArg};
 use output::Output;
 
-const VOLT_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/in1_input";
-const AMP_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/curr1_input";
+const VDD_IN_VOLT_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/in1_input";
+const VDD_IN_AMP_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/curr1_input";
+const VDD_CPU_GPU_VOLT_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/in2_input";
+const VDD_CPU_GPU_AMP_INPUT: &str = "/sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon1/curr2_input";
 
 const HASHES: [AlgoOpt; 9] = [
     AlgoOpt::Md5,
@@ -37,34 +39,47 @@ const CHUNK_SIZES: [u64; 9] = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 struct PowerSample {
     time: Option<f64>,
-    volts: u64,
-    amps: u64,
-    watts: u64,
+    total_volts: u64,
+    total_amps: u64,
+    cgpu_volts: u64,
+    cgpu_amps: u64,
 }
 
 fn main() {
     let args = CliArgs::parse();
 
-    match args.chunk_size {
-        ChunkSize::All => {
-            let mut first_chunk = true;
+    match args.run {
+        RunArg::Idle => {
+            let mut output = Output::new(args.output).expect("failed to open output file");
 
-            for size in CHUNK_SIZES {
-                if !first_chunk {
-                    if !args.quiet {
-                        println!("idling for {:#?}", args.delay);
-                    }
+            let idle = collect_idle(args.duration, args.rate, args.include_time, args.quiet);
 
-                    std::thread::sleep(args.delay);
-                } else {
-                    first_chunk = false;
-                }
-
-                run_chunk_size(size, &args);
+            for sample in idle {
+                writeln!(&mut output, "idle,{},{}", sample.total_volts, sample.total_amps)
+                    .expect("failed to write power sample to csv");
             }
         }
-        ChunkSize::Known(size) => {
-            run_chunk_size(size, &args);
+        RunArg::Test(ref test) => match test.chunk_size {
+            ChunkSize::All => {
+                let mut first_chunk = true;
+
+                for size in CHUNK_SIZES {
+                    if !first_chunk {
+                        if !args.quiet {
+                            println!("idling for {:#?}", args.delay);
+                        }
+
+                        std::thread::sleep(args.delay);
+                    } else {
+                        first_chunk = false;
+                    }
+
+                    run_chunk_size(size, &args, &test);
+                }
+            }
+            ChunkSize::Known(size) => {
+                run_chunk_size(size, &args, &test);
+            }
         }
     }
 }
@@ -76,35 +91,55 @@ impl PowerSample {
         } else {
             None
         };
-        let volts = get_hwmon(VOLT_INPUT).unwrap_or(0);
-        let amps = get_hwmon(AMP_INPUT).unwrap_or(0);
-        let watts = volts * amps;
+        let total_volts = get_hwmon(VDD_IN_VOLT_INPUT).unwrap_or(0);
+        let total_amps = get_hwmon(VDD_IN_AMP_INPUT).unwrap_or(0);
+        let cgpu_volts = get_hwmon(VDD_CPU_GPU_VOLT_INPUT).unwrap_or(0);
+        let cgpu_amps = get_hwmon(VDD_CPU_GPU_AMP_INPUT).unwrap_or(0);
 
         Self {
             time,
-            volts,
-            amps,
-            watts,
+            total_volts,
+            total_amps,
+            cgpu_volts,
+            cgpu_amps,
         }
+    }
+
+    fn milli_watts(&self) -> f64 {
+        (self.total_volts * self.total_amps) as f64 / 1000.0
+    }
+
+    fn cgpu_milli_watts(&self) -> f64 {
+        (self.cgpu_volts * self.cgpu_amps) as f64 / 1000.0
+    }
+
+    fn watts(&self) -> f64 {
+        self.milli_watts() / 1000.0
+    }
+
+    fn cgpu_watts(&self) -> f64 {
+        self.cgpu_milli_watts() / 1000.0
     }
 }
 
 impl Display for PowerSample {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         if let Some(time) = &self.time {
-            write!(
-                f,
-                "{time:.03} v: {} a: {} w: {}",
-                self.volts, self.amps, self.watts
-            )
+            writeln!(f, "{time:.03} --------------------")?;
+            writeln!(f, "total mV: {} mA: {:03} W: {:.06}", self.total_volts, self.total_amps, self.watts())?;
+            writeln!(f, " cgpu mV: {} mA: {:03} W: {:.06}", self.cgpu_volts, self.cgpu_amps, self.cgpu_watts())?;
         } else {
-            write!(f, "v: {} a: {} w: {}", self.volts, self.amps, self.watts)
+            writeln!(f, "--------------------")?;
+            writeln!(f, "total mV: {} mA: {:03} W: {:.06}", self.total_volts, self.total_amps, self.watts())?;
+            writeln!(f, " cgpu mV: {} mA: {:03} W: {:.06}", self.cgpu_volts, self.cgpu_amps, self.cgpu_watts())?;
         }
+
+        Ok(())
     }
 }
 
-fn run_chunk_size(size: u64, args: &CliArgs) {
-    if matches!(args.algo, AlgoOpt::All) {
+fn run_chunk_size(size: u64, args: &CliArgs, test: &TestArg) {
+    if matches!(test.algo, AlgoOpt::All) {
         let mut first_algo = true;
 
         for algo in HASHES {
@@ -118,17 +153,17 @@ fn run_chunk_size(size: u64, args: &CliArgs) {
                 first_algo = false;
             }
 
-            run_algo(&algo, size, args);
+            run_algo(&algo, size, args, test);
         }
     } else {
-        run_algo(&args.algo, size, args);
+        run_algo(&test.algo, size, args, test);
     }
 }
 
-fn run_algo(algo: &AlgoOpt, chunk_size: u64, args: &CliArgs) {
+fn run_algo(algo: &AlgoOpt, chunk_size: u64, args: &CliArgs, test: &TestArg) {
     let mut output = if let Some(output) = &args.output {
         if output.is_dir() {
-            let output_name = format!("power_{}_{algo}_{chunk_size}.csv", args.exe);
+            let output_name = format!("{}_{algo}_{chunk_size}.csv", test.exe);
 
             Output::new(Some(output.join(output_name))).expect("failed to open output file")
         } else {
@@ -138,7 +173,7 @@ fn run_algo(algo: &AlgoOpt, chunk_size: u64, args: &CliArgs) {
         Output::new(None::<PathBuf>).unwrap()
     };
 
-    writeln!(&mut output, "type,time,milli_volts,milli_amps")
+    writeln!(&mut output, "type,total_volts,total_amps,cgpu_volts,cgpu_amps")
         .expect("failed to write csv header to output");
 
     println!("running {algo} {chunk_size}");
@@ -155,9 +190,9 @@ fn run_algo(algo: &AlgoOpt, chunk_size: u64, args: &CliArgs) {
 
     let num_samples = args.duration.as_millis() / args.rate.as_millis();
     let mut collected = Vec::with_capacity(num_samples as usize + 10);
-    let mut child = match &args.exe {
-        ExeOpt::Native => spawn_native(args.duration.as_secs(), algo, chunk_size, &args.input),
-        ExeOpt::Wasm => spawn_wasm(args.duration.as_secs(), algo, chunk_size, &args.input),
+    let mut child = match &test.exe {
+        ExeOpt::Native => spawn_native(args.duration.as_secs(), algo, chunk_size, &test.input),
+        ExeOpt::Wasm => spawn_wasm(args.duration.as_secs(), algo, chunk_size, &test.input),
     };
 
     let status = loop {
@@ -181,12 +216,12 @@ fn run_algo(algo: &AlgoOpt, chunk_size: u64, args: &CliArgs) {
     }
 
     for sample in idle {
-        writeln!(output, "{algo},idle,{},{}", sample.volts, sample.amps)
+        writeln!(output, "idle,{},{},{},{}", sample.total_volts, sample.total_amps, sample.cgpu_volts, sample.cgpu_amps)
             .expect("failed to write power sample to csv");
     }
 
     for sample in collected {
-        writeln!(output, "{algo},run,{},{}", sample.volts, sample.amps)
+        writeln!(output, "run,{},{},{},{}", sample.total_volts, sample.total_amps, sample.cgpu_volts, sample.cgpu_amps)
             .expect("failed to write power samle to csv");
     }
 }

@@ -5,13 +5,10 @@ use std::{
     time::Duration,
 };
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, Args, ValueEnum};
 
 #[derive(Debug, Parser)]
 pub struct CliArgs {
-    #[arg(short, long, default_value = "512")]
-    pub chunk_size: ChunkSize,
-
     #[arg(short, long, default_value = "60", value_parser = parse_secs)]
     pub duration: Duration,
 
@@ -29,6 +26,21 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub include_time: bool,
+
+    #[command(subcommand)]
+    pub run: RunArg,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum RunArg {
+    Idle,
+    Test(TestArg),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct TestArg {
+    #[arg(short, long, default_value = "512")]
+    pub chunk_size: ChunkSize,
 
     pub exe: ExeOpt,
 
